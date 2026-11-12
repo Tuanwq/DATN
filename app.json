@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Sổ Tiền",
+    "slug": "so-tien",
+    "version": "0.1.0",
+    "scheme": "sotien",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["android", "web"],
+    "android": {
+      "package": "vn.sotien.app"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": ["expo-router"]
+  }
+}

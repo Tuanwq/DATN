@@ -1,0 +1,8 @@
+node_modules/
+.expo/
+android/
+dist/
+dist-android/
+.taste-skill/
+.env*
+*.local
