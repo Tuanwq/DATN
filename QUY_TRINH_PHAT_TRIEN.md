@@ -41,6 +41,53 @@ The planned Universal App shares a frontend codebase across Web and Android and 
 | Deployment | Docker packages services as containers, and Docker Compose runs them together. |
 | Version control and repository structure | Git tracks changes, GitHub hosts the repository, and a monorepo organizes the app, services, and shared code. |
 
+## Project Structure
+
+The planned monorepo keeps the personal finance client, backend, machine learning service, and shared code in one Git repository.
+
+```text
+DATN/
+├── apps/
+│   ├── client/                 # Expo app for Android and web
+│   │   ├── src/
+│   │   │   ├── app/            # Expo Router routes and layouts
+│   │   │   ├── components/     # Reusable components
+│   │   │   ├── screens/        # Application screens
+│   │   │   ├── hooks/          # Custom hooks
+│   │   │   ├── services/       # API client and frontend services
+│   │   │   ├── lib/            # Utilities
+│   │   │   ├── types/          # Client-specific types
+│   │   │   ├── theme/          # Theme configuration
+│   │   │   └── ui/             # UI primitives
+│   │   ├── public/
+│   │   ├── app.json
+│   │   └── package.json
+│   └── api/                    # Node.js, Express, and TypeScript backend
+├── services/
+│   └── ml-api/                 # Python and FastAPI forecasting service
+├── packages/
+│   └── shared/                 # Shared TypeScript types, schemas, and utilities
+├── docs/                       # Project documentation
+├── .github/                    # CI/CD configuration
+├── package.json                # Root workspace configuration
+├── pnpm-workspace.yaml
+└── README.md
+```
+
+### Responsibilities
+
+- The client shares a React Native and Expo codebase across Android and web. It accesses server data through the backend API.
+- The backend handles authentication and business logic, and accesses PostgreSQL through Prisma.
+- The ML service processes financial data and forecasts spending.
+- The client and backend use `packages/shared` for common TypeScript code. The client has no dependency on backend internals.
+
+### Development Guidelines
+
+- Keep UI, business logic, and data access in separate modules. Place new code in the directory that matches its responsibility and reuse components and utilities where appropriate.
+- Preserve existing functionality and reuse existing code when restructuring the repository.
+- Use pnpm Workspaces for JavaScript and TypeScript packages. Manage Python dependencies within `services/ml-api`.
+- Keep each application and service independently developable, runnable, and deployable.
+
 ## Feature Development Process
 
 1. **Analyze the business requirements**
