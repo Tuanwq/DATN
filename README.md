@@ -11,7 +11,7 @@ pnpm install
 pnpm web
 ```
 
-Mở địa chỉ Metro in trong terminal. Để chạy trên Android, dùng `pnpm start` và quét mã QR bằng Expo Go hỗ trợ SDK 57. Khi đã mở giả lập Android, dùng `pnpm android`.
+Mở địa chỉ Metro in trong terminal. Trước khi đăng nhập, hãy thiết lập API, PostgreSQL và tài khoản thử nghiệm theo [hướng dẫn đăng nhập](docs/dang-nhap.md). Để dùng Google trên Android, cài development build bằng `pnpm --dir apps/client exec expo run:android` sau khi thiết lập Android SDK và JDK.
 
 | Lệnh | Kết quả |
 | --- | --- |
@@ -32,11 +32,11 @@ Mở địa chỉ Metro in trong terminal. Để chạy trên Android, dùng `pn
 | Ngân sách | Hạn mức, số tiền đã chi và tỷ lệ sử dụng theo danh mục |
 | Thống kê | Xu hướng dòng tiền và tỷ trọng chi theo danh mục |
 | Dự báo | Số liệu chi tiêu minh họa cho tháng tiếp theo |
-| Cài đặt | Giao diện sáng, tối hoặc theo thiết bị. Lựa chọn được lưu cục bộ qua AsyncStorage trên Android và web |
+| Cài đặt | Phiên đăng nhập, đăng xuất và tùy chọn giao diện sáng, tối hoặc theo thiết bị |
 
 ## Cấu trúc thư mục
 
-Ứng dụng Expo nằm trong `apps/client`. Các thư mục `apps/api`, `services/ml-api` và `packages/shared` dành cho các phần sẽ triển khai sau. Xem sơ đồ monorepo trong [tài liệu quy trình phát triển](QUY_TRINH_PHAT_TRIEN.md#project-structure).
+Ứng dụng Expo nằm trong `apps/client`. API xác thực và Prisma nằm trong `apps/api`. Client và API dùng chung các kiểu dữ liệu và schema xác thực trong `packages/shared`. Xem sơ đồ monorepo trong [tài liệu quy trình phát triển](QUY_TRINH_PHAT_TRIEN.md#project-structure).
 
 ```text
 apps/client/src/
@@ -53,6 +53,6 @@ apps/client/src/
 
 ## Nguồn dữ liệu
 
-`FinanceProvider` nhận một `FinanceRepository` bất đồng bộ. Ứng dụng truyền `mockFinanceRepository` ở `apps/client/src/app/_layout.tsx`, với giao dịch minh họa từ tháng 5 đến tháng 10/2026. Số dư tài khoản là ảnh chụp cuối kỳ mẫu và được giữ cố định khi chọn tháng. Thu chi, ngân sách và biểu đồ được tính từ giao dịch của kỳ đã chọn. Tham số `thang` trong URL lưu kỳ báo cáo của từng màn hình hỗ trợ chọn tháng.
+`FinanceProvider` nhận một `FinanceRepository` bất đồng bộ. Ứng dụng truyền `mockFinanceRepository` trong layout của nhóm route nội bộ, với giao dịch minh họa từ tháng 5 đến tháng 10/2026. Số dư tài khoản là ảnh chụp cuối kỳ mẫu và được giữ cố định khi chọn tháng. Thu chi, ngân sách và biểu đồ được tính từ giao dịch của kỳ đã chọn. Tham số `thang` trong URL lưu kỳ báo cáo của từng màn hình hỗ trợ chọn tháng.
 
-Khi có REST API, triển khai `FinanceRepository` để chuyển dữ liệu trả về sang `FinanceSnapshot` rồi truyền repository mới vào provider. Một repository offline-first có thể triển khai cùng giao diện để đọc snapshot từ bộ nhớ cục bộ và cập nhật từ REST khi kết nối trở lại. Bản hiện tại chỉ có frontend, dữ liệu mẫu và tùy chọn giao diện lưu cục bộ.
+Khi có REST API tài chính, có thể triển khai `FinanceRepository` để chuyển dữ liệu trả về sang `FinanceSnapshot` rồi truyền repository mới vào provider. Một repository offline-first có thể triển khai cùng giao diện để đọc snapshot từ bộ nhớ cục bộ và cập nhật từ REST khi kết nối trở lại.
