@@ -2,6 +2,8 @@
 
 Tính năng hỗ trợ tài khoản đã có trong PostgreSQL. Người dùng có thể đăng nhập bằng email và mật khẩu hoặc bằng tài khoản Google đã liên kết, sau đó đăng xuất trong **Cài đặt**.
 
+Người dùng mới có thể bấm **Tạo tài khoản** trên màn hình đăng nhập. [Hướng dẫn đăng ký Sổ Tiền](dang-ky.md)
+
 ## Chạy cục bộ
 
 1. Tạo một cơ sở dữ liệu PostgreSQL cho dự án. Sao chép `apps/api/.env.example` thành `apps/api/.env` và điền `DATABASE_URL`. Sao chép `apps/client/.env.example` thành `apps/client/.env`.

@@ -3,15 +3,16 @@ import { Router, type Request, type Response } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import {
   authTokenSchema, googleAttemptRequestSchema, googleLoginRequestSchema, loginRequestSchema,
+  registrationErrorCode, registrationRequestSchema,
   type AuthErrorCode, type AuthPlatform, type AuthSession, type GoogleCallbackResult,
 } from '@so-tien/shared/auth'
 import type { ApiConfig } from '../config.js'
 import type { Database } from '../db.js'
 import {
-  consumeGoogleAttempt, createGoogleAttempt, findGoogleUser, GOOGLE_ATTEMPT_TTL_MS,
+  consumeGoogleAttempt, createGoogleAttempt, resolveGoogleUser, GOOGLE_ATTEMPT_TTL_MS,
   type GoogleProvider,
 } from './google.js'
-import { createPasswordAuthenticator } from './password.js'
+import { createPasswordAuthenticator, registerPasswordUser } from './password.js'
 import { createSession, findSession, revokeSession } from './sessions.js'
 import { hashToken } from './tokens.js'
 
@@ -60,18 +61,20 @@ export function createAuthRouter(config: ApiConfig, db: Database, google: Google
     res.cookie(sessionCookie, token, { ...sessionCookieOptions, expires: new Date(session.expiresAt) })
   }
 
-  function redirectGoogle(res: Response, result?: GoogleCallbackResult) {
-    const destination = new URL(result ? '/dang-nhap' : '/', config.webOrigin)
+  function redirectGoogle(res: Response, result?: GoogleCallbackResult, isRegistration = false) {
+    const authPath = isRegistration ? '/dang-ky' : '/dang-nhap'
+    const destination = new URL(result ? authPath : '/', config.webOrigin)
     if (result) destination.searchParams.set('google', result)
     res.redirect(303, destination.href)
   }
 
-  async function verifyGoogleSubject(idToken: string, nonceHash: string) {
+  async function verifyGoogleIdentity(idToken: string, nonceHash: string) {
     try {
-      const { subject, nonce } = await google.verifyIdToken(idToken)
+      const claims = await google.verifyIdToken(idToken)
+      const { subject, nonce } = claims
       if (typeof nonce === 'string' && hashToken(nonce) === nonceHash &&
           typeof subject === 'string' && subject.length > 0 && subject.length <= 255) {
-        return subject
+        return { ...claims, subject }
       }
     } catch {
       // Verification details and raw tokens stay out of responses and logs.
@@ -103,19 +106,30 @@ export function createAuthRouter(config: ApiConfig, db: Database, google: Google
     }
   })
 
+  router.post('/register', loginRateLimit(10), async (req, res) => {
+    const parsed = registrationRequestSchema.safeParse(req.body)
+    if (!parsed.success) return sendError(res, 400, registrationErrorCode(parsed.error.issues))
+    if (!allowsPlatform(req, parsed.data.platform)) return sendError(res, 403, 'FORBIDDEN')
+
+    const created = await registerPasswordUser(db, parsed.data)
+    if (!created) return sendError(res, 409, 'EMAIL_ALREADY_REGISTERED')
+    res.status(201).end()
+  })
+
   router.post('/google/attempts', loginRateLimit(15), async (req, res) => {
     const parsed = googleAttemptRequestSchema.safeParse(req.body)
     if (!parsed.success) return sendError(res, 400, 'INVALID_REQUEST')
-    const { platform } = parsed.data
+    const { platform, intent } = parsed.data
     if (!allowsPlatform(req, platform)) return sendError(res, 403, 'FORBIDDEN')
     if (!config.googleClientId || (platform === 'web' && !config.googleRedirectUri)) {
       return sendError(res, 503, 'GOOGLE_UNAVAILABLE')
     }
 
-    const { attempt, nonce, browserProof, verifier } = await createGoogleAttempt(db, platform)
+    const isRegistration = intent === 'register'
+    const { attempt, nonce, browserProof, verifier } = await createGoogleAttempt(db, platform, isRegistration)
     if (browserProof && verifier) {
       res.cookie(googleCookie, browserProof, { ...googleCookieOptions, maxAge: GOOGLE_ATTEMPT_TTL_MS })
-      res.json({ platform, authorizationUrl: google.authorizationUrl(attempt, nonce, verifier) })
+      res.json({ platform, authorizationUrl: google.authorizationUrl(attempt, nonce, verifier, isRegistration) })
     } else {
       res.json({ platform, attempt, nonce, clientId: config.googleClientId })
     }
@@ -128,19 +142,20 @@ export function createAuthRouter(config: ApiConfig, db: Database, google: Google
 
     const attempt = await consumeGoogleAttempt(db, state, 'web', proof)
     if (!attempt?.verifier) return redirectGoogle(res, 'GOOGLE_FAILED')
+    const { isRegistration } = attempt
     res.clearCookie(googleCookie, googleCookieOptions)
-    if (req.query.error === 'access_denied') return redirectGoogle(res, 'GOOGLE_CANCELLED')
+    if (req.query.error === 'access_denied') return redirectGoogle(res, 'GOOGLE_CANCELLED', isRegistration)
 
     const { code } = req.query
     if (req.query.error || typeof code !== 'string' || !code || code.length > 2048) {
-      return redirectGoogle(res, 'GOOGLE_FAILED')
+      return redirectGoogle(res, 'GOOGLE_FAILED', isRegistration)
     }
     const idToken = await google.exchangeCode(code, attempt.verifier).catch(() => undefined)
-    const subject = idToken && await verifyGoogleSubject(idToken, attempt.nonceHash)
-    if (!subject) return redirectGoogle(res, 'GOOGLE_FAILED')
+    const identity = idToken && await verifyGoogleIdentity(idToken, attempt.nonceHash)
+    if (!identity) return redirectGoogle(res, 'GOOGLE_FAILED', isRegistration)
 
-    const user = await findGoogleUser(db, subject)
-    if (!user) return redirectGoogle(res, 'GOOGLE_NOT_LINKED')
+    const user = await resolveGoogleUser(db, identity, isRegistration)
+    if (typeof user === 'string') return redirectGoogle(res, user, isRegistration)
 
     const { token, session } = await createSession(db, user, readCookie(req, sessionCookie))
     setWebSession(res, token, session)
@@ -155,11 +170,13 @@ export function createAuthRouter(config: ApiConfig, db: Database, google: Google
 
     const { idToken, attempt: attemptToken } = parsed.data
     const attempt = await consumeGoogleAttempt(db, attemptToken, 'android')
-    const subject = attempt && await verifyGoogleSubject(idToken, attempt.nonceHash)
-    if (!subject) return sendError(res, 401, 'GOOGLE_FAILED')
+    const identity = attempt && await verifyGoogleIdentity(idToken, attempt.nonceHash)
+    if (!attempt || !identity) return sendError(res, 401, 'GOOGLE_FAILED')
 
-    const user = await findGoogleUser(db, subject)
-    if (!user) return sendError(res, 403, 'GOOGLE_NOT_LINKED')
+    const user = await resolveGoogleUser(db, identity, attempt.isRegistration)
+    if (typeof user === 'string') {
+      return sendError(res, user === 'EMAIL_ALREADY_REGISTERED' ? 409 : 403, user)
+    }
     const { token, session } = await createSession(db, user)
     res.json({ ...session, token })
   })

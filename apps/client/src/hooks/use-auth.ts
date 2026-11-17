@@ -1,12 +1,12 @@
 import { Platform } from 'react-native'
 import { create } from 'zustand'
-import type { AuthSession, PasswordLogin } from '@so-tien/shared/auth'
-import { AuthError, fetchSession, loginWithPassword, revokeSession } from '@/services/auth-api'
+import type { AuthSession, GoogleAuthIntent, PasswordLogin, PasswordRegistration } from '@so-tien/shared/auth'
+import { AuthError, fetchSession, loginWithPassword, registerPasswordAccount, revokeSession } from '@/services/auth-api'
 import { describeAuthError } from '@/services/auth-messages'
 import { signInWithGoogle } from '@/services/google-login'
 import { clearToken, readToken, storeToken } from '@/services/session-storage'
 
-type BusyAction = 'password' | 'google' | 'logout'
+type BusyAction = 'password' | 'register' | 'google' | 'logout'
 type SessionState =
   | { status: 'checking' }
   | { status: 'unavailable'; error: string }
@@ -19,7 +19,8 @@ interface AuthState {
   restore: () => Promise<void>
   expire: (session: AuthSession) => void
   login: (credentials: PasswordLogin) => Promise<void>
-  loginWithGoogle: () => Promise<void>
+  register: (credentials: PasswordRegistration) => Promise<boolean>
+  loginWithGoogle: (intent?: GoogleAuthIntent) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -55,11 +56,12 @@ async function finishLogin(result: AuthSession & { token?: string }) {
 
 export const useAuth = create<AuthState>((set, get) => {
   async function run(action: BusyAction, work: () => Promise<void>) {
-    if (get().busy) return
+    if (get().busy) return false
     revision += 1
     set({ busy: action })
     try {
       await work()
+      return true
     } finally {
       set({ busy: null })
     }
@@ -108,10 +110,14 @@ export const useAuth = create<AuthState>((set, get) => {
         set({ current: { status: 'signed-in', session } })
       })
     },
-    async loginWithGoogle() {
+    async register(credentials) {
+      if (get().current.status !== 'signed-out') return false
+      return run('register', () => registerPasswordAccount(credentials))
+    },
+    async loginWithGoogle(intent = 'login') {
       if (get().current.status !== 'signed-out') return
       await run('google', async () => {
-        const result = await signInWithGoogle()
+        const result = await signInWithGoogle(intent)
         if (result) {
           const session = await finishLogin(result)
           set({ current: { status: 'signed-in', session } })
