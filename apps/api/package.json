@@ -1,0 +1,36 @@
+{
+  "name": "@so-tien/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "build": "pnpm --filter @so-tien/shared build && pnpm db:generate && tsc",
+    "dev": "pnpm --filter @so-tien/shared build && pnpm db:generate && tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "pnpm build && node --test test/auth.test.mjs",
+    "user:fixture": "tsx src/dev/seed-auth.ts"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "@so-tien/shared": "workspace:*",
+    "cookie": "^1.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.0",
+    "google-auth-library": "^10.5.0",
+    "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "prisma": "7.10.1",
+    "tsx": "^4.20.0",
+    "typescript": "~6.0.3"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@so-tien/shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./auth": {
+      "types": "./src/auth.ts",
+      "react-native": "./src/auth.ts",
+      "browser": "./src/auth.ts",
+      "default": "./dist/auth.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --strict --skipLibCheck --module NodeNext --target ES2022 --outDir dist src/auth.ts"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3"
+  }
+}
