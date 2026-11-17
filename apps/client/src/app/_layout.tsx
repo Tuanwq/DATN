@@ -50,6 +50,7 @@ function SessionLayout() {
         <Stack screenOptions={{ headerShown: false, animation: 'none', contentStyle: { backgroundColor: colors.background } }}>
           <Stack.Protected guard={current.status === 'signed-out'}>
             <Stack.Screen name="dang-nhap" />
+            <Stack.Screen name="dang-ky" />
           </Stack.Protected>
           <Stack.Protected guard={current.status === 'signed-in'}>
             <Stack.Screen name="(internal)" />

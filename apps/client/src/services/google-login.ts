@@ -1,11 +1,12 @@
+import type { GoogleAuthIntent } from '@so-tien/shared/auth'
 import Constants, { ExecutionEnvironment } from 'expo-constants'
 import { AuthError, loginWithGoogleToken, startGoogleAttempt } from './auth-api'
 
-export async function signInWithGoogle() {
+export async function signInWithGoogle(intent: GoogleAuthIntent) {
   if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) {
     throw new AuthError('GOOGLE_UNAVAILABLE')
   }
-  const attempt = await startGoogleAttempt()
+  const attempt = await startGoogleAttempt(intent)
   if (attempt.platform !== 'android') throw new AuthError('GOOGLE_FAILED')
 
   const {

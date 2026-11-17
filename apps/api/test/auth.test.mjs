@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { after, before, test } from 'node:test'
+import { verify } from '@node-rs/argon2'
 import { OAuth2Client } from 'google-auth-library'
 import { createApp } from '../dist/app.js'
 import { createGoogleProvider } from '../dist/auth/google.js'
@@ -26,6 +27,7 @@ const password = 'Temporary test credential'
 const email = `auth-test-${randomUUID()}@example.test`
 const subject = randomUUID()
 const attemptHashes = []
+const registeredEmails = []
 const db = createDatabase(databaseUrl)
 const google = createGoogleProvider(config)
 let listener
@@ -61,6 +63,7 @@ after(async () => {
   try {
     if (listener) await new Promise((resolve) => listener.close(resolve))
     if (user) await db.user.delete({ where: { id: user.id } })
+    await db.user.deleteMany({ where: { email: { in: registeredEmails } } })
     await db.oAuthAttempt.deleteMany({ where: { tokenHash: { in: attemptHashes } } })
   } finally {
     await db.$disconnect()
@@ -93,9 +96,9 @@ async function assertError(response, status, error) {
   assert.deepEqual(await response.json(), { error })
 }
 
-async function startGoogle(platform) {
+async function startGoogle(platform, intent) {
   const response = await post('/google/attempts', {
-    body: { platform },
+    body: { platform, intent },
     origin: platform === 'web' ? webOrigin : undefined,
   })
   assert.equal(response.status, 200)
@@ -110,6 +113,7 @@ async function startGoogle(platform) {
   assert.equal(authorization.origin, 'https://accounts.google.com')
   assert.equal(authorization.searchParams.get('redirect_uri'), redirectUri)
   assert.equal(authorization.searchParams.get('code_challenge_method'), 'S256')
+  assert.equal(authorization.searchParams.get('scope'), intent === 'register' ? 'openid email' : 'openid')
   const state = authorization.searchParams.get('state')
   const nonce = authorization.searchParams.get('nonce')
   const challenge = authorization.searchParams.get('code_challenge')
@@ -173,6 +177,42 @@ test('Android login returns a bearer token and protects revoked and expired sess
   await assertError(await call('/session', { token: expiring.token }), 401, 'UNAUTHENTICATED')
 })
 
+test('Password registration validates fields, protects Web origin and prevents duplicate accounts', async () => {
+  const registeredEmail = `registration-test-${randomUUID()}@example.test`
+  const androidEmail = `registration-test-${randomUUID()}@example.test`
+  registeredEmails.push(registeredEmail, androidEmail)
+  const body = { email: registeredEmail, password, passwordConfirmation: password, platform: 'web' }
+  const register = (overrides = {}, origin = webOrigin) => post('/register', { body: { ...body, ...overrides }, origin })
+  await assertError(await register({ email: 'invalid' }), 400, 'INVALID_EMAIL')
+  await assertError(await register({ password: 'short' }), 400, 'INVALID_PASSWORD')
+  await assertError(await register({ password: ' '.repeat(20) }), 400, 'INVALID_PASSWORD')
+  await assertError(await register({ passwordConfirmation: 'a different password' }), 400, 'PASSWORD_MISMATCH')
+  await assertError(await register({}, 'https://other.example'), 403, 'FORBIDDEN')
+  assert.equal(await db.user.count({ where: { email: registeredEmail } }), 0)
+
+  const results = await Promise.all([register({ email: ` ${registeredEmail.toUpperCase()} ` }), register()])
+  assert.deepEqual(results.map((response) => response.status).sort(), [201, 409])
+  const created = results.find((response) => response.status === 201)
+  assert.equal(await created.text(), '')
+  assert.deepEqual(created.headers.getSetCookie(), [])
+  await assertError(results.find((response) => response.status === 409), 409, 'EMAIL_ALREADY_REGISTERED')
+  await assertError(await register({ email: email.toUpperCase() }), 409, 'EMAIL_ALREADY_REGISTERED')
+
+  const record = await db.user.findUniqueOrThrow({ where: { email: registeredEmail } })
+  assert.match(record.passwordHash, /^\$argon2id\$/)
+  assert.equal(await verify(record.passwordHash, password), true)
+  const login = await post('/login', { body: { email: registeredEmail, password, platform: 'web' }, origin: webOrigin })
+  assert.equal(login.status, 200)
+  assert.deepEqual((await login.json()).user, { id: record.id, email: registeredEmail })
+
+  const android = await post('/register', { body: { ...body, email: androidEmail, platform: 'android' } })
+  assert.equal(android.status, 201)
+  const androidLogin = await post('/login', { body: { email: androidEmail, password, platform: 'android' } })
+  assert.equal(androidLogin.status, 200)
+  const { token } = await androidLogin.json()
+  assert.equal((await (await call('/session', { token })).json()).user.email, androidEmail)
+})
+
 test('Android Google login verifies the nonce and consumes attempts atomically', async () => {
   const authenticate = (attempt, claims) => post('/google/login', {
     body: { attempt, idToken: JSON.stringify(claims) },
@@ -192,7 +232,7 @@ test('Android Google login verifies the nonce and consumes attempts atomically',
   await assertError(await authenticate(wrong.attempt, { subject, nonce: 'incorrect' }), 401, 'GOOGLE_FAILED')
   const unlinked = await startGoogle('android')
   await assertError(await authenticate(unlinked.attempt, {
-    subject: randomUUID(), nonce: unlinked.nonce, email,
+    subject: randomUUID(), nonce: unlinked.nonce, email, emailVerified: true,
   }), 403, 'GOOGLE_NOT_LINKED')
   const expired = await startGoogle('android')
   await db.oAuthAttempt.update({
@@ -226,6 +266,72 @@ test('Web Google login binds state to the browser, validates PKCE, and handles c
   assert.equal(cancellation.headers.getSetCookie().some((value) => value.startsWith('__Host-sotien_session=')), false)
 })
 
+test('Android Google registration requires a verified email and creates one identity across concurrent attempts', async () => {
+  const googleEmail = `google-android-${randomUUID()}@example.test`
+  const googleSubject = randomUUID()
+  registeredEmails.push(googleEmail)
+  const authenticate = ({ attempt, nonce }, claims) => post('/google/login', {
+    body: { attempt, idToken: JSON.stringify({ subject: googleSubject, nonce, email: googleEmail, ...claims }) },
+  })
+  const missing = await startGoogle('android', 'register')
+  await assertError(await authenticate(missing, { emailVerified: false }), 403, 'GOOGLE_EMAIL_UNVERIFIED')
+  assert.equal(await db.user.count({ where: { email: googleEmail } }), 0)
+
+  const [first, second] = await Promise.all([startGoogle('android', 'register'), startGoogle('android', 'register')])
+  const registered = await Promise.all([
+    authenticate(first, { email: googleEmail.toUpperCase(), emailVerified: true }),
+    authenticate(second, { emailVerified: true }),
+  ])
+  assert.deepEqual(registered.map((response) => response.status), [200, 200])
+  const sessions = await Promise.all(registered.map((response) => response.json()))
+  assert.deepEqual(sessions[0].user, sessions[1].user)
+  assert.equal(sessions[0].user.email, googleEmail)
+  assert.equal(await db.user.count({ where: { email: googleEmail, passwordHash: null } }), 1)
+  assert.equal(await db.authIdentity.count({ where: { provider: 'google', providerSubject: googleSubject } }), 1)
+  assert.equal((await call('/session', { token: sessions[0].token })).status, 200)
+
+  const repeat = await startGoogle('android')
+  const signedIn = await authenticate(repeat, { email: undefined })
+  assert.equal(signedIn.status, 200)
+  assert.deepEqual((await signedIn.json()).user, sessions[0].user)
+
+  const conflictingSubject = randomUUID()
+  const conflict = await startGoogle('android', 'register')
+  await assertError(await authenticate(conflict, {
+    subject: conflictingSubject, email: email.toUpperCase(), emailVerified: true,
+  }), 409, 'EMAIL_ALREADY_REGISTERED')
+  assert.equal(await db.authIdentity.count({ where: { providerSubject: conflictingSubject } }), 0)
+})
+
+test('Web Google registration creates an account, resumes it by subject and sends failures back to registration', async () => {
+  const googleEmail = `google-web-${randomUUID()}@example.test`
+  const googleSubject = randomUUID()
+  registeredEmails.push(googleEmail)
+  async function authenticate(claims) {
+    const { state, nonce, challenge, cookie } = await startGoogle('web', 'register')
+    const code = JSON.stringify({ challenge, token: JSON.stringify({ subject: googleSubject, nonce, ...claims }) })
+    return call(`/google/callback?${new URLSearchParams({ state, code })}`, { cookie })
+  }
+
+  const conflict = await authenticate({ email, emailVerified: true })
+  assert.equal(conflict.headers.get('location'), `${webOrigin}/dang-ky?google=EMAIL_ALREADY_REGISTERED`)
+  assert.equal(await db.authIdentity.count({ where: { providerSubject: googleSubject } }), 0)
+
+  const response = await authenticate({ email: googleEmail, emailVerified: true })
+  assert.equal(response.status, 303)
+  assert.equal(response.headers.get('location'), `${webOrigin}/`)
+  const sessionCookie = cookieHeader(response, '__Host-sotien_session')
+  const session = await call('/session', { cookie: sessionCookie.split(';')[0] })
+  assert.equal(session.status, 200)
+  const { user: createdUser } = await session.json()
+  assert.equal(createdUser.email, googleEmail)
+
+  const returning = await authenticate({ email: 'different@example.test', emailVerified: true })
+  assert.equal(returning.headers.get('location'), `${webOrigin}/`)
+  const returningCookie = cookieHeader(returning, '__Host-sotien_session').split(';')[0]
+  assert.deepEqual((await (await call('/session', { cookie: returningCookie })).json()).user, createdUser)
+})
+
 test('Google verifier rejects bad signatures, audience, issuers and expired claims', async (context) => {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
   context.mock.method(OAuth2Client.prototype, 'getFederatedSignonCertsAsync', async () => ({
@@ -242,6 +348,8 @@ test('Google verifier rejects bad signatures, audience, issuers and expired clai
     iat: timestamp - 1000,
     exp: timestamp + 1800,
     nonce: 'test-nonce',
+    email,
+    email_verified: true,
   }
   function token(overrides, hasValidSignature = true) {
     const input = `${header}.${encode({ ...claims, ...overrides })}`
@@ -250,7 +358,9 @@ test('Google verifier rejects bad signatures, audience, issuers and expired clai
     return `${input}.${signature.toString('base64url')}`
   }
 
-  assert.deepEqual(await google.verifyIdToken(token()), { subject, nonce: claims.nonce })
+  assert.deepEqual(await google.verifyIdToken(token()), {
+    subject, nonce: claims.nonce, email, emailVerified: true,
+  })
   await assert.rejects(google.verifyIdToken(token({}, false)))
   await assert.rejects(google.verifyIdToken(token({ aud: 'untrusted-client' })))
   await assert.rejects(google.verifyIdToken(token({ iss: 'https://other.example' })))

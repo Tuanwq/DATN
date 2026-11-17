@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library'
-import type { AuthPlatform } from '@so-tien/shared/auth'
+import { emailSchema, type AuthPlatform } from '@so-tien/shared/auth'
 import type { ApiConfig } from '../config.js'
 import type { Database } from '../db.js'
 import { Prisma } from '../generated/prisma/client.js'
@@ -17,9 +17,9 @@ export function createGoogleProvider(config: ApiConfig) {
   })
 
   return {
-    authorizationUrl(state: string, nonce: string, verifier: string) {
+    authorizationUrl(state: string, nonce: string, verifier: string, isRegistration: boolean) {
       const url = new URL(client.generateAuthUrl({
-        scope: ['openid'],
+        scope: isRegistration ? ['openid', 'email'] : ['openid'],
         state,
         code_challenge: createHash('sha256').update(verifier).digest('base64url'),
         code_challenge_method: CodeChallengeMethod.S256,
@@ -36,14 +36,18 @@ export function createGoogleProvider(config: ApiConfig) {
     async verifyIdToken(token: string) {
       const ticket = await client.verifyIdToken({ idToken: token, audience: config.googleClientId })
       const claims = ticket.getPayload()
-      return { subject: claims?.sub, nonce: claims?.nonce }
+      return {
+        subject: claims?.sub, nonce: claims?.nonce,
+        email: claims?.email, emailVerified: claims?.email_verified,
+      }
     },
   }
 }
 
 export type GoogleProvider = ReturnType<typeof createGoogleProvider>
+export type VerifiedGoogleIdentity = Awaited<ReturnType<GoogleProvider['verifyIdToken']>> & { subject: string }
 
-export async function createGoogleAttempt(db: Database, platform: AuthPlatform) {
+export async function createGoogleAttempt(db: Database, platform: AuthPlatform, isRegistration: boolean) {
   const attempt = createToken()
   const nonce = hashToken(createToken())
   const browserProof = platform === 'web' ? createToken() : null
@@ -51,6 +55,7 @@ export async function createGoogleAttempt(db: Database, platform: AuthPlatform) 
   await db.oAuthAttempt.create({
     data: {
       platform,
+      isRegistration,
       tokenHash: hashToken(attempt),
       nonceHash: hashToken(nonce),
       browserHash: browserProof && hashToken(browserProof),
@@ -78,10 +83,37 @@ export async function consumeGoogleAttempt(
   }
 }
 
-export async function findGoogleUser(db: Database, subject: string) {
+async function findGoogleUser(db: Database, subject: string) {
   const identity = await db.authIdentity.findUnique({
     where: { provider_providerSubject: { provider: 'google', providerSubject: subject } },
     select: { user: { select: { id: true, email: true } } },
   })
   return identity?.user
+}
+
+export async function resolveGoogleUser(db: Database, identity: VerifiedGoogleIdentity, isRegistration: boolean) {
+  const existing = await findGoogleUser(db, identity.subject)
+  if (existing) return existing
+  if (!isRegistration) return 'GOOGLE_NOT_LINKED'
+
+  const email = emailSchema.safeParse(identity.email)
+  if (identity.emailVerified !== true || !email.success) return 'GOOGLE_EMAIL_UNVERIFIED'
+
+  try {
+    return await db.user.create({
+      data: {
+        email: email.data,
+        identities: { create: { provider: 'google', providerSubject: identity.subject } },
+      },
+      select: { id: true, email: true },
+    })
+  } catch (error) {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error
+    // Another attempt can register the same Google subject while this request is in flight.
+    const registered = await findGoogleUser(db, identity.subject)
+    if (registered) return registered
+    const emailOwner = await db.user.findUnique({ where: { email: email.data }, select: { id: true } })
+    if (emailOwner) return 'EMAIL_ALREADY_REGISTERED'
+    throw error
+  }
 }

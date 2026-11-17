@@ -1,6 +1,6 @@
 import {
   authErrorResponseSchema, authSessionSchema, googleAttemptResponseSchema, loginResponseSchema,
-  type AuthErrorCode, type PasswordLogin,
+  type AuthErrorCode, type GoogleAuthIntent, type PasswordLogin, type PasswordRegistration,
 } from '@so-tien/shared/auth'
 import { Platform } from 'react-native'
 
@@ -77,9 +77,13 @@ export async function loginWithPassword(credentials: PasswordLogin) {
   return parsed.data
 }
 
-export async function startGoogleAttempt() {
+export async function registerPasswordAccount(credentials: PasswordRegistration) {
+  await request('/register', { post: true, body: { ...credentials, platform } })
+}
+
+export async function startGoogleAttempt(intent: GoogleAuthIntent) {
   const parsed = googleAttemptResponseSchema.safeParse(await request('/google/attempts', {
-    post: true, body: { platform },
+    post: true, body: { platform, intent },
   }))
   if (!parsed.success) throw new AuthError('SERVER_ERROR')
   return parsed.data

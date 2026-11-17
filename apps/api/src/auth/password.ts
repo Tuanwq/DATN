@@ -2,6 +2,7 @@ import { Algorithm, hash, verify } from '@node-rs/argon2'
 import { randomBytes } from 'node:crypto'
 import type { PasswordLogin } from '@so-tien/shared/auth'
 import type { Database } from '../db.js'
+import { Prisma } from '../generated/prisma/client.js'
 
 export function hashPassword(password: string) {
   return hash(password, {
@@ -10,6 +11,17 @@ export function hashPassword(password: string) {
     timeCost: 2,
     parallelism: 1,
   })
+}
+
+export async function registerPasswordUser(db: Database, { email, password }: PasswordLogin) {
+  const passwordHash = await hashPassword(password)
+  try {
+    await db.user.create({ data: { email, passwordHash }, select: { id: true } })
+    return true
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return false
+    throw error
+  }
 }
 
 export function createPasswordAuthenticator(db: Database) {

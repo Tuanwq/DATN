@@ -44,12 +44,13 @@ model AuthSession {
 }
 
 model OAuthAttempt {
-  tokenHash   String   @id @map("token_hash") @db.Char(64)
-  platform    String   @db.VarChar(16)
-  nonceHash   String   @map("nonce_hash") @db.Char(64)
-  browserHash String?  @map("browser_hash") @db.Char(64)
-  verifier    String?  @db.VarChar(128)
-  expiresAt   DateTime @map("expires_at") @db.Timestamptz
+  tokenHash      String   @id @map("token_hash") @db.Char(64)
+  platform       String   @db.VarChar(16)
+  isRegistration Boolean  @default(false) @map("is_registration")
+  nonceHash      String   @map("nonce_hash") @db.Char(64)
+  browserHash    String?  @map("browser_hash") @db.Char(64)
+  verifier       String?  @db.VarChar(128)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz
 
   @@index([expiresAt])
   @@map("oauth_attempts")
